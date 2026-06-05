@@ -2,7 +2,6 @@
 
 import type Vapi from "@vapi-ai/web";
 import {
-  ImageUp,
   Link as LinkIcon,
   Loader2,
   Mic,
@@ -13,7 +12,14 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import styles from "./MentorApp.module.css";
 import { parseYouTubeUrl } from "@/lib/utils/youtube";
 import type { BuildDebug, BuildError, Mentor, SkippedLink } from "@/types/mentor";
@@ -21,11 +27,20 @@ import type { BuildDebug, BuildError, Mentor, SkippedLink } from "@/types/mentor
 type Screen = "input" | "building" | "conversation";
 type TalkMode = "hold" | "toggle";
 type VoiceState = "disconnected" | "connecting" | "idle" | "listening" | "speaking";
+type TranscriptRole = "user" | "assistant";
 type TranscriptTurn = {
   id: string;
-  role: "user" | "assistant";
+  role: TranscriptRole;
   text: string;
   final: boolean;
+  committed?: boolean;
+  committedText?: string;
+  partialText?: string;
+  streamKey?: string;
+};
+type TranscriptStreamState = {
+  activeTurnKeyByRole: Partial<Record<TranscriptRole, string>>;
+  localTurnCounter: number;
 };
 
 const MAX_LINKS = 6;
@@ -34,13 +49,13 @@ const BUILD_STEPS = [
   "Studying how they think and talk...",
   "Bringing the face to life...",
 ];
+const AVATAR_TALKING_VIDEO_SRC = "/avatar/talking.mp4";
+const AVATAR_LISTENING_VIDEO_SRC = "/avatar/listening.mp4";
 
 export default function MentorApp() {
   const [screen, setScreen] = useState<Screen>("input");
   const [personName, setPersonName] = useState("");
   const [urlFields, setUrlFields] = useState<string[]>([""]);
-  const [uploadedPhotoDataUrl, setUploadedPhotoDataUrl] = useState<string>();
-  const [uploadedPhotoName, setUploadedPhotoName] = useState<string>();
   const [mentor, setMentor] = useState<Mentor | null>(null);
   const [skippedLinks, setSkippedLinks] = useState<SkippedLink[]>([]);
   const [buildDebug, setBuildDebug] = useState<BuildDebug | null>(null);
@@ -92,7 +107,6 @@ export default function MentorApp() {
         body: JSON.stringify({
           personName: personName.trim(),
           youtubeUrls: nonEmptyUrls,
-          uploadedPhotoDataUrl,
         }),
       });
 
@@ -147,28 +161,6 @@ export default function MentorApp() {
     setScreen("input");
   }
 
-  async function handlePhotoUpload(file: File | undefined) {
-    setError(null);
-
-    if (!file) {
-      return;
-    }
-
-    if (!file.type.startsWith("image/")) {
-      setError("Please upload an image file.");
-      return;
-    }
-
-    if (file.size > 5 * 1024 * 1024) {
-      setError("Please upload an image that is 5 MB or smaller.");
-      return;
-    }
-
-    const dataUrl = await readFileAsDataUrl(file);
-    setUploadedPhotoDataUrl(dataUrl);
-    setUploadedPhotoName(file.name);
-  }
-
   return (
     <main className={styles.appShell}>
       {screen === "input" && (
@@ -187,7 +179,7 @@ export default function MentorApp() {
               <input
                 value={personName}
                 onChange={(event) => setPersonName(event.target.value)}
-                placeholder="Person's name"
+                placeholder="Mentor's nickname :)"
                 autoComplete="off"
               />
             </label>
@@ -237,35 +229,7 @@ export default function MentorApp() {
               >
                 Add link
               </button>
-
-              <label className={styles.uploadButton}>
-                <ImageUp aria-hidden size={18} />
-                <span>{uploadedPhotoName ?? "Use your own photo"}</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => handlePhotoUpload(event.target.files?.[0])}
-                />
-              </label>
             </div>
-
-            {uploadedPhotoDataUrl && (
-              <div className={styles.uploadPreview}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={uploadedPhotoDataUrl} alt="Uploaded face preview" />
-                <button
-                  className={styles.iconButton}
-                  type="button"
-                  onClick={() => {
-                    setUploadedPhotoDataUrl(undefined);
-                    setUploadedPhotoName(undefined);
-                  }}
-                  aria-label="Remove uploaded photo"
-                >
-                  <Trash2 aria-hidden size={17} />
-                </button>
-              </div>
-            )}
 
             {error && <p className={styles.errorMessage}>{error}</p>}
             {buildDebug && <BuildDebugPanel debug={buildDebug} />}
@@ -323,9 +287,14 @@ function ConversationView({
   const [voiceState, setVoiceState] = useState<VoiceState>("disconnected");
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [avatarVideoFailed, setAvatarVideoFailed] = useState(false);
   const vapiRef = useRef<Vapi | null>(null);
   const isPressedRef = useRef(false);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptStreamRef = useRef<TranscriptStreamState>({
+    activeTurnKeyByRole: {},
+    localTurnCounter: 0,
+  });
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -440,7 +409,9 @@ function ConversationView({
     vapi.on("call-end", () => markCallDisconnected(vapi));
     vapi.on("speech-start", () => setVoiceState("speaking"));
     vapi.on("speech-end", () => setVoiceState("idle"));
-    vapi.on("message", (message) => handleVapiMessage(message, setTranscript));
+    vapi.on("message", (message) =>
+      handleVapiMessage(message, setTranscript, transcriptStreamRef),
+    );
     vapi.on("error", (caughtError) => {
       setVoiceError(readableVapiError(caughtError));
       setVoiceState("idle");
@@ -528,26 +499,48 @@ function ConversationView({
         <div
           className={`${styles.faceFrame} ${isSpeaking ? styles.speaking : ""}`}
         >
-          {mentor.animationLoopUrl && mentor.animationStatus === "ready" ? (
-            <video
-              className={styles.faceMedia}
-              src={mentor.animationLoopUrl}
-              autoPlay
-              loop
-              muted
-              playsInline
-            />
-          ) : (
+          {avatarVideoFailed ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               className={`${styles.faceMedia} ${styles.mentorFace}`}
               src={mentor.faceImageUrl}
               alt={`${mentor.personName} AI recreation`}
             />
+          ) : (
+            <>
+              <video
+                aria-hidden
+                className={`${styles.faceMedia} ${styles.faceVideo} ${
+                  isSpeaking ? styles.faceVideoActive : ""
+                }`}
+                src={AVATAR_TALKING_VIDEO_SRC}
+                poster={mentor.faceImageUrl}
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="auto"
+                onError={() => setAvatarVideoFailed(true)}
+              />
+              <video
+                aria-hidden
+                className={`${styles.faceMedia} ${styles.faceVideo} ${
+                  isSpeaking ? "" : styles.faceVideoActive
+                }`}
+                src={AVATAR_LISTENING_VIDEO_SRC}
+                poster={mentor.faceImageUrl}
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="auto"
+                onError={() => setAvatarVideoFailed(true)}
+              />
+            </>
           )}
         </div>
         <p className={styles.disclaimer}>
-          AI recreation based on public videos - not the real person.
+          Doodle version of your conversation :)
         </p>
         <h2>{mentor.personName}</h2>
         <div className={styles.voiceStatus}>{voiceStatusText(voiceState)}</div>
@@ -622,7 +615,7 @@ function ConversationView({
           onClick={resetConversation}
         >
           <RefreshCcw aria-hidden size={18} />
-          New mentor
+          Refresh Mentor
         </button>
 
         {voiceError && <p className={styles.errorMessage}>{voiceError}</p>}
@@ -779,7 +772,8 @@ function formatDuration(ms: number) {
 
 function handleVapiMessage(
   message: unknown,
-  setTranscript: React.Dispatch<React.SetStateAction<TranscriptTurn[]>>,
+  setTranscript: Dispatch<SetStateAction<TranscriptTurn[]>>,
+  transcriptStreamRef: { current: TranscriptStreamState },
 ) {
   if (!message || typeof message !== "object") {
     return;
@@ -793,7 +787,14 @@ function handleVapiMessage(
     messages?: unknown;
     messagesOpenAIFormatted?: unknown;
     output?: unknown;
+    status?: "started" | "stopped";
+    turn?: number;
   };
+
+  if (event.type === "speech-update" && isTranscriptRole(event.role)) {
+    syncActiveSpeechTurn(event, transcriptStreamRef.current);
+    return;
+  }
 
   if (event.type === "conversation-update") {
     const authoritativeTurns = normalizeConversationMessages(
@@ -803,7 +804,9 @@ function handleVapiMessage(
     );
 
     if (authoritativeTurns.length > 0) {
-      setTranscript(authoritativeTurns);
+      setTranscript((current) =>
+        mergeAuthoritativeTurns(current, authoritativeTurns),
+      );
     }
 
     return;
@@ -821,7 +824,7 @@ function handleVapiMessage(
   }
 
   if (
-    event.type !== "transcript" ||
+    !isTranscriptEventType(event.type) ||
     !event.transcript ||
     event.role !== "user"
   ) {
@@ -831,29 +834,59 @@ function handleVapiMessage(
   const role = "user";
   const transcriptText = event.transcript;
   const isFinal = event.transcriptType !== "partial";
+  const streamKey = getTranscriptStreamKey(role, event.turn, transcriptStreamRef.current);
 
   setTranscript((current) => {
-    const lastIndex = current.length - 1;
-    const lastTurn = current[lastIndex];
-    const nextTurn: TranscriptTurn = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      role,
-      text: transcriptText,
-      final: isFinal,
-    };
-
-    if (lastTurn?.role === role) {
-      const next = [...current];
-      next[lastIndex] = {
-        ...lastTurn,
-        text: transcriptText,
-        final: isFinal,
-      };
-      return next;
-    }
-
-    return [...current, nextTurn];
+    return mergeUserTranscriptTurn(current, transcriptText, isFinal, streamKey);
   });
+}
+
+function syncActiveSpeechTurn(
+  event: {
+    role?: "user" | "assistant";
+    status?: "started" | "stopped";
+    turn?: number;
+  },
+  streamState: TranscriptStreamState,
+) {
+  if (!isTranscriptRole(event.role) || event.status !== "started") {
+    return;
+  }
+
+  streamState.activeTurnKeyByRole[event.role] =
+    typeof event.turn === "number"
+      ? `${event.role}-${event.turn}`
+      : createLocalTurnKey(event.role, streamState);
+}
+
+function getTranscriptStreamKey(
+  role: TranscriptRole,
+  eventTurn: number | undefined,
+  streamState: TranscriptStreamState,
+) {
+  if (typeof eventTurn === "number") {
+    const streamKey = `${role}-${eventTurn}`;
+    streamState.activeTurnKeyByRole[role] = streamKey;
+    return streamKey;
+  }
+
+  const activeTurnKey = streamState.activeTurnKeyByRole[role];
+
+  if (activeTurnKey) {
+    return activeTurnKey;
+  }
+
+  const streamKey = createLocalTurnKey(role, streamState);
+  streamState.activeTurnKeyByRole[role] = streamKey;
+  return streamKey;
+}
+
+function createLocalTurnKey(
+  role: TranscriptRole,
+  streamState: TranscriptStreamState,
+) {
+  streamState.localTurnCounter += 1;
+  return `${role}-local-${streamState.localTurnCounter}`;
 }
 
 function appendAssistantModelOutput(
@@ -872,6 +905,7 @@ function appendAssistantModelOutput(
     next[lastIndex] = {
       ...lastTurn,
       text: text.trimStart(),
+      committed: false,
     };
 
     return next;
@@ -886,8 +920,151 @@ function appendAssistantModelOutput(
       role: "assistant",
       text: outputText.trimStart(),
       final: false,
+      committed: false,
+      streamKey: "assistant-live",
     },
   ];
+}
+
+function mergeUserTranscriptTurn(
+  current: TranscriptTurn[],
+  transcriptText: string,
+  isFinal: boolean,
+  streamKey: string,
+): TranscriptTurn[] {
+  const targetIndex = findTranscriptTargetIndex(current, "user", streamKey);
+  const targetTurn =
+    targetIndex >= 0
+      ? current[targetIndex]
+      : createTranscriptTurn("user", streamKey);
+  const updatedTurn = applyTranscriptChunk(targetTurn, transcriptText, isFinal);
+
+  if (!updatedTurn.text.trim()) {
+    return current;
+  }
+
+  if (targetIndex >= 0) {
+    const next = [...current];
+    next[targetIndex] = updatedTurn;
+    return next;
+  }
+
+  return [...current, updatedTurn];
+}
+
+function findTranscriptTargetIndex(
+  current: TranscriptTurn[],
+  role: TranscriptRole,
+  streamKey: string,
+) {
+  const streamIndex = current.findIndex(
+    (turn) => turn.role === role && turn.streamKey === streamKey,
+  );
+
+  if (streamIndex >= 0) {
+    return streamIndex;
+  }
+
+  const lastIndex = current.length - 1;
+  const lastTurn = current[lastIndex];
+
+  if (lastTurn?.role === role && !lastTurn.committed) {
+    return lastIndex;
+  }
+
+  return -1;
+}
+
+function createTranscriptTurn(
+  role: TranscriptRole,
+  streamKey: string,
+): TranscriptTurn {
+  return {
+    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    text: "",
+    final: false,
+    committed: false,
+    committedText: "",
+    partialText: "",
+    streamKey,
+  };
+}
+
+function applyTranscriptChunk(
+  turn: TranscriptTurn,
+  transcriptText: string,
+  isFinal: boolean,
+): TranscriptTurn {
+  const committedText = turn.committedText ?? (turn.final ? turn.text : "");
+  const partialText = turn.partialText ?? (!turn.final ? turn.text : "");
+
+  if (isFinal) {
+    const nextCommittedText = mergeTranscriptText(committedText, transcriptText);
+
+    return {
+      ...turn,
+      text: nextCommittedText,
+      final: true,
+      committed: false,
+      committedText: nextCommittedText,
+      partialText: "",
+    };
+  }
+
+  const nextPartialText = partialTextAfterCommitted(
+    committedText,
+    transcriptText || partialText,
+  );
+  const nextText = combineTranscriptParts(committedText, nextPartialText);
+
+  return {
+    ...turn,
+    text: nextText,
+    final: false,
+    committed: false,
+    committedText,
+    partialText: nextPartialText,
+  };
+}
+
+function mergeAuthoritativeTurns(
+  current: TranscriptTurn[],
+  authoritativeTurns: TranscriptTurn[],
+) {
+  const drafts = current.filter(
+    (turn) =>
+      !turn.committed &&
+      turn.text.trim() &&
+      !isTurnRepresented(authoritativeTurns, turn),
+  );
+
+  return [...authoritativeTurns, ...drafts];
+}
+
+function isTurnRepresented(
+  authoritativeTurns: TranscriptTurn[],
+  draft: TranscriptTurn,
+) {
+  const draftText = normalizeTranscriptText(draft.text);
+
+  return authoritativeTurns.some((turn) => {
+    if (turn.role !== draft.role) {
+      return false;
+    }
+
+    const authoritativeText = normalizeTranscriptText(turn.text);
+
+    if (authoritativeText.length < 8 || draftText.length < 8) {
+      return authoritativeText === draftText;
+    }
+
+    return (
+      authoritativeText === draftText ||
+      authoritativeText.includes(draftText) ||
+      draftText.includes(authoritativeText)
+    );
+  });
 }
 
 function normalizeConversationMessages(messages: unknown): TranscriptTurn[] {
@@ -921,8 +1098,117 @@ function normalizeConversationMessages(messages: unknown): TranscriptTurn[] {
       role: item.role,
       text,
       final: true,
+      committed: true,
+      committedText: text,
+      partialText: "",
+      streamKey: `conversation-${index}-${item.role}`,
     };
   });
+}
+
+function mergeTranscriptText(existingText: string, incomingText: string) {
+  const existing = existingText.trim();
+  const incoming = incomingText.trim();
+
+  if (!existing) {
+    return incoming;
+  }
+
+  if (!incoming) {
+    return existing;
+  }
+
+  const normalizedExisting = normalizeTranscriptText(existing);
+  const normalizedIncoming = normalizeTranscriptText(incoming);
+
+  if (
+    normalizedExisting === normalizedIncoming ||
+    normalizedExisting.includes(normalizedIncoming)
+  ) {
+    return existing;
+  }
+
+  if (normalizedIncoming.includes(normalizedExisting)) {
+    return incoming;
+  }
+
+  const overlapLength = transcriptOverlapLength(existing, incoming);
+
+  if (overlapLength > 0) {
+    return `${existing}${incoming.slice(overlapLength)}`.trim();
+  }
+
+  return `${existing} ${incoming}`.trim();
+}
+
+function partialTextAfterCommitted(
+  committedText: string,
+  partialTranscriptText: string,
+) {
+  const committed = committedText.trim();
+  const partial = partialTranscriptText.trim();
+
+  if (!committed || !partial) {
+    return partial;
+  }
+
+  const normalizedCommitted = normalizeTranscriptText(committed);
+  const normalizedPartial = normalizeTranscriptText(partial);
+
+  if (normalizedCommitted.includes(normalizedPartial)) {
+    return "";
+  }
+
+  if (partial.toLowerCase().startsWith(committed.toLowerCase())) {
+    return partial.slice(committed.length).trimStart();
+  }
+
+  const overlapLength = transcriptOverlapLength(committed, partial);
+  return partial.slice(overlapLength).trimStart();
+}
+
+function combineTranscriptParts(committedText: string, partialText: string) {
+  const committed = committedText.trim();
+  const partial = partialText.trim();
+
+  if (!committed) {
+    return partial;
+  }
+
+  if (!partial) {
+    return committed;
+  }
+
+  return `${committed} ${partial}`;
+}
+
+function transcriptOverlapLength(left: string, right: string) {
+  const normalizedLeft = left.toLowerCase();
+  const normalizedRight = right.toLowerCase();
+  const maxOverlap = Math.min(left.length, right.length);
+
+  for (let length = maxOverlap; length > 0; length -= 1) {
+    if (
+      normalizedLeft.slice(-length) === normalizedRight.slice(0, length) &&
+      (length >= 4 || /\s/.test(normalizedRight[length] ?? ""))
+    ) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+function normalizeTranscriptText(text: string) {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isTranscriptRole(role: unknown): role is TranscriptRole {
+  return role === "user" || role === "assistant";
+}
+
+function isTranscriptEventType(type: unknown) {
+  return type === "transcript" || type === "transcript[transcriptType='final']";
 }
 
 function extractMessageText(content: unknown): string {
@@ -1027,13 +1313,4 @@ function readableVapiError(error: unknown) {
   }
 
   return "Voice call connection failed. Try starting the call again.";
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Could not read uploaded photo."));
-    reader.readAsDataURL(file);
-  });
 }

@@ -1,10 +1,5 @@
 import { buildConversationSystemPrompt } from "@/lib/prompts/persona";
 import {
-  getAnimationVideoUrl,
-  setAnimationJob,
-} from "@/lib/services/animation-store";
-import { startVeoAnimationJob } from "@/lib/services/gemini";
-import {
   buildFallbackPersonaProfile,
   buildPersonaProfile,
   compressTranscriptContextIfNeeded,
@@ -36,6 +31,7 @@ export const runtime = "nodejs";
 const MAX_YOUTUBE_URLS = 6;
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const TRANSCRIPT_REQUEST_STAGGER_MS = 1100;
+const LOCAL_AVATAR_LOOP_URL = "/avatar/listening.mp4";
 
 export async function POST(request: Request) {
   try {
@@ -127,18 +123,12 @@ export async function POST(request: Request) {
       systemPrompt,
     });
 
-    const animationStatus = await startAnimationForAssistant(
-      vapiAssistantId,
-      faceImageUrl,
-    );
-
     const mentor: Mentor = {
       personName,
       personaProfile,
       faceImageUrl,
-      animationLoopUrl:
-        animationStatus === "ready" ? getAnimationVideoUrl(vapiAssistantId) : null,
-      animationStatus,
+      animationLoopUrl: LOCAL_AVATAR_LOOP_URL,
+      animationStatus: "ready",
       vapiAssistantId,
       skippedLinks,
       debug,
@@ -343,34 +333,4 @@ async function chooseThumbnailUrl(videoId: string) {
   }
 
   return getHighQualityThumbnailUrl(videoId);
-}
-
-async function startAnimationForAssistant(
-  assistantId: string,
-  faceImageUrl: string,
-): Promise<Mentor["animationStatus"]> {
-  try {
-    const operationName = await startVeoAnimationJob(faceImageUrl);
-
-    setAnimationJob({
-      assistantId,
-      operationName,
-      animationStatus: "pending",
-      updatedAt: Date.now(),
-    });
-
-    return "pending";
-  } catch (error) {
-    setAnimationJob({
-      assistantId,
-      animationStatus: "failed",
-      error:
-        error instanceof Error
-          ? error.message
-          : "Animation generation failed to start.",
-      updatedAt: Date.now(),
-    });
-
-    return "failed";
-  }
 }

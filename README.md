@@ -1,36 +1,162 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Live AI Mentor
 
-## Getting Started
+Live AI Mentor is a Next.js app that turns a person's public YouTube videos into a real-time voice mentor you can talk to.
 
-First, run the development server:
+## What It Does
+
+- Accepts a mentor name and 1-6 YouTube links from the same person.
+- Fetches video transcripts with Supadata.
+- Builds a persona and grounded conversation prompt with OpenAI.
+- Creates a Vapi web-call assistant server-side.
+- Lets the user talk to the mentor with push-to-talk voice controls.
+- Shows a live transcript panel for both user and assistant turns.
+- Uses local avatar loops:
+  - `/avatar/listening.mp4` while idle or while the user is talking.
+  - `/avatar/talking.mp4` while the assistant is speaking.
+
+The app is deployed at:
+
+```text
+https://project-012gp.vercel.app
+```
+
+## Tech Stack
+
+- Next.js 16.2.7 App Router
+- React 19
+- TypeScript
+- Vapi Web SDK for live calls
+- OpenAI for persona generation and Vapi LLM/TTS credentialing
+- Supadata for transcript fetching
+- Vercel for deployment
+
+## Environment Variables
+
+Create `.env.local` for local development:
+
+```env
+OPENAI_API_KEY=
+VAPI_PRIVATE_KEY=
+NEXT_PUBLIC_VAPI_PUBLIC_KEY=
+TRANSCRIPT_API_KEY=
+GEMINI_API_KEY=
+VAPI_LIVE_MODEL=gpt-4o
+VAPI_LIVE_FALLBACK_MODELS=gpt-4o-mini
+```
+
+Notes:
+
+- `NEXT_PUBLIC_VAPI_PUBLIC_KEY` is the only client-side key.
+- Do not expose `OPENAI_API_KEY`, `VAPI_PRIVATE_KEY`, `TRANSCRIPT_API_KEY`, or `GEMINI_API_KEY` in browser code.
+- Gemini/Veo is currently not used by the visible avatar flow; local MP4 loops replaced it for demo stability.
+
+## Local Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run the dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Useful checks:
 
-## Learn More
+```bash
+npm run lint
+npm run build
+```
 
-To learn more about Next.js, take a look at the following resources:
+On Windows, `next build` can occasionally hit a locked `.next` file. Re-running the same build command usually clears it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Main Flow
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. User enters a mentor name.
+2. User pastes 1-6 YouTube links.
+3. `/api/build-mentor` validates the request.
+4. Supadata fetches transcripts with rate-limit-friendly spacing.
+5. OpenAI creates a persona profile and compressed live context.
+6. Vapi assistant is created server-side with the generated system prompt.
+7. The conversation screen starts a Vapi web call.
+8. The avatar switches between local listening/talking videos based on voice state.
+9. The transcript panel updates from Vapi conversation and transcript events.
 
-## Deploy on Vercel
+## Current Implementation Notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- The photo upload UI was removed; the app uses the YouTube thumbnail as the mentor face image fallback.
+- Local avatar videos live in `public/avatar/`.
+- The transcript panel has its own scroll area on desktop/tablet.
+- Transcript diagnostics are still visible in the UI when build debug data exists.
+- Vapi call settings include longer silence and duration limits for push-to-talk.
+- `/api/build-mentor` has `maxDuration = 60` and uses the Node.js runtime.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deployment
+
+The project is linked to Vercel. Production deployment can be run with:
+
+```bash
+npx vercel deploy --prod --yes --token <VERCEL_TOKEN>
+```
+
+Required Vercel environment variables:
+
+```text
+OPENAI_API_KEY
+VAPI_PRIVATE_KEY
+NEXT_PUBLIC_VAPI_PUBLIC_KEY
+TRANSCRIPT_API_KEY
+GEMINI_API_KEY
+VAPI_LIVE_MODEL
+VAPI_LIVE_FALLBACK_MODELS
+```
+
+After deployment, smoke-test:
+
+- Homepage returns `200`.
+- `/api/build-mentor` returns `400` for an empty invalid request.
+- `/avatar/talking.mp4` returns `200` with `video/mp4`.
+- `/avatar/listening.mp4` returns `200` with `video/mp4`.
+- No obvious server-side key names or key values appear in served HTML/static assets.
+
+## Security And Cost Notes
+
+- There is currently no app-level rate limit or passcode gate.
+- Anyone with the public link can attempt builds and voice calls, which can consume API credits.
+- Before broad sharing, consider adding one of:
+  - Vercel Deployment Protection
+  - a simple demo passcode
+  - per-IP rate limiting for `/api/build-mentor`
+- Revoke any temporary Vercel tokens after deployment.
+- Keep vendor billing alerts enabled for OpenAI, Vapi, Supadata, and Vercel.
+
+## Git Commands
+
+Review changes:
+
+```bash
+git status
+git diff --stat
+```
+
+Commit everything:
+
+```bash
+git add .
+git commit -m "Polish live AI mentor demo"
+```
+
+Push to GitHub:
+
+```bash
+git push origin main
+```

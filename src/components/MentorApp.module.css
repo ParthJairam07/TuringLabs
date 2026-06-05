@@ -121,7 +121,6 @@
 
 .primaryButton,
 .secondaryButton,
-.uploadButton,
 .talkButton {
   min-height: 44px;
   display: inline-flex;
@@ -156,34 +155,14 @@
   opacity: 0.48;
 }
 
-.secondaryButton,
-.uploadButton {
+.secondaryButton {
   color: #17211c;
   background: #fff;
   border-color: rgba(23, 33, 28, 0.16);
 }
 
-.secondaryButton:hover:not(:disabled),
-.uploadButton:hover {
+.secondaryButton:hover:not(:disabled) {
   border-color: rgba(23, 33, 28, 0.32);
-}
-
-.uploadButton input {
-  display: none;
-}
-
-.uploadPreview {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #4d5c52;
-}
-
-.uploadPreview img {
-  width: 54px;
-  height: 54px;
-  border-radius: 8px;
-  object-fit: cover;
 }
 
 .inlineError,
@@ -216,21 +195,24 @@
 
 .conversationView {
   width: min(1220px, calc(100% - 40px));
-  min-height: 100svh;
+  height: 100svh;
   margin: 0 auto;
   display: grid;
   grid-template-columns: minmax(320px, 430px) minmax(460px, 1fr);
   gap: 22px;
   align-items: stretch;
   padding: 28px 0;
+  box-sizing: border-box;
 }
 
 .portraitColumn {
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 14px;
   border-radius: 8px;
+  overflow-y: auto;
   padding: 22px;
 }
 
@@ -273,6 +255,17 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.faceVideo {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.faceVideoActive {
+  opacity: 1;
 }
 
 .mentorFace {
@@ -627,6 +620,16 @@
 
   .conversationView {
     width: min(100% - 28px, 680px);
+    height: auto;
+    min-height: 100svh;
+  }
+
+  .portraitColumn {
+    overflow-y: visible;
+  }
+
+  .transcriptPanel {
+    min-height: 420px;
   }
 }
 
@@ -642,8 +645,7 @@
 
   .inputActions,
   .primaryButton,
-  .secondaryButton,
-  .uploadButton {
+  .secondaryButton {
     width: 100%;
   }
 
