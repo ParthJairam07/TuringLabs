@@ -1,18 +1,23 @@
 import {
   buildCompressionUserPrompt,
+  buildKnowledgeMapUserPrompt,
   buildPersonaPassUserPrompt,
   COMPRESSION_SYSTEM_PROMPT,
+  KNOWLEDGE_MAP_SYSTEM_PROMPT,
   PERSONA_PASS_SYSTEM_PROMPT,
 } from "@/lib/prompts/persona";
 import type { PersonaProfile } from "@/types/mentor";
 
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 const PERSONA_MODEL = "gpt-4o";
+const KNOWLEDGE_MAP_MODEL = "gpt-4o";
 const COMPRESSION_MODEL = "gpt-4o-mini";
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-const TOKEN_COMPRESSION_THRESHOLD = 8_000;
-const TOKEN_COMPRESSION_TARGET = 5_000;
-const LIVE_CONTEXT_TOKEN_LIMIT = 7_000;
+const TOKEN_COMPRESSION_THRESHOLD = 100_000;
+const TOKEN_COMPRESSION_TARGET = 70_000;
+const LIVE_CONTEXT_TOKEN_LIMIT = 70_000;
+const MAX_COMPRESSION_OUTPUT_TOKENS = 16_000;
+const KNOWLEDGE_MAP_MAX_TOKENS = 4_000;
 
 type OpenAIChatResponse = {
   choices?: {
@@ -70,23 +75,48 @@ export async function compressTranscriptContextIfNeeded(combinedTranscripts: str
   let transcriptContext = combinedTranscripts;
 
   if (estimateTokens(combinedTranscripts) > TOKEN_COMPRESSION_THRESHOLD) {
-    transcriptContext = await chatCompletionText({
-      model: COMPRESSION_MODEL,
-      messages: [
-        { role: "system", content: COMPRESSION_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: buildCompressionUserPrompt(
-            TOKEN_COMPRESSION_TARGET,
-            combinedTranscripts,
-          ),
-        },
-      ],
-      maxCompletionTokens: TOKEN_COMPRESSION_TARGET + 1000,
-    });
+    try {
+      transcriptContext = await chatCompletionText({
+        model: COMPRESSION_MODEL,
+        messages: [
+          { role: "system", content: COMPRESSION_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: buildCompressionUserPrompt(
+              TOKEN_COMPRESSION_TARGET,
+              combinedTranscripts,
+            ),
+          },
+        ],
+        maxCompletionTokens: MAX_COMPRESSION_OUTPUT_TOKENS,
+      });
+    } catch (error) {
+      console.info("[build-mentor] transcript compression skipped", {
+        reason:
+          error instanceof Error ? error.message : "Compression failed.",
+      });
+    }
   }
 
   return limitTextToApproxTokens(transcriptContext, LIVE_CONTEXT_TOKEN_LIMIT);
+}
+
+export async function buildKnowledgeMap(
+  transcriptContext: string,
+  personName: string,
+) {
+  return chatCompletionText({
+    model: KNOWLEDGE_MAP_MODEL,
+    messages: [
+      { role: "system", content: KNOWLEDGE_MAP_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: buildKnowledgeMapUserPrompt(personName, transcriptContext),
+      },
+    ],
+    maxCompletionTokens: KNOWLEDGE_MAP_MAX_TOKENS,
+    temperature: 0.1,
+  });
 }
 
 export async function buildPersonaProfile(
@@ -155,11 +185,13 @@ async function chatCompletionText({
   messages,
   responseFormat,
   maxCompletionTokens,
+  temperature = 0.2,
 }: {
   model: string;
   messages: { role: "system" | "user"; content: string }[];
   responseFormat?: unknown;
   maxCompletionTokens?: number;
+  temperature?: number;
 }) {
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -176,7 +208,7 @@ async function chatCompletionText({
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.2,
+      temperature,
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(maxCompletionTokens
         ? { max_completion_tokens: maxCompletionTokens }

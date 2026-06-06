@@ -10,7 +10,6 @@ import {
   Sparkles,
   Square,
   Trash2,
-  UserRound,
 } from "lucide-react";
 import {
   type Dispatch,
@@ -54,7 +53,6 @@ const AVATAR_LISTENING_VIDEO_SRC = "/avatar/listening.mp4";
 
 export default function MentorApp() {
   const [screen, setScreen] = useState<Screen>("input");
-  const [personName, setPersonName] = useState("");
   const [urlFields, setUrlFields] = useState<string[]>([""]);
   const [mentor, setMentor] = useState<Mentor | null>(null);
   const [skippedLinks, setSkippedLinks] = useState<SkippedLink[]>([]);
@@ -71,7 +69,6 @@ export default function MentorApp() {
     [nonEmptyUrls],
   );
   const canBuild =
-    personName.trim().length > 0 &&
     nonEmptyUrls.length > 0 &&
     invalidUrls.length === 0;
 
@@ -105,7 +102,6 @@ export default function MentorApp() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          personName: personName.trim(),
           youtubeUrls: nonEmptyUrls,
         }),
       });
@@ -169,21 +165,12 @@ export default function MentorApp() {
             <p className={styles.kicker}>Live AI Mentor</p>
             <h1>Talk to anyone. Paste their YouTube videos, get a live mentor.</h1>
             <p className={styles.subtext}>
-              Paste up to 6 YouTube links of the same person.
+              Paste up to 6 YouTube links of the same person. We&apos;ll infer
+              their name automatically.
             </p>
           </div>
 
           <div className={styles.builderPanel}>
-            <label className={`${styles.urlRow} ${styles.nameRow}`}>
-              <UserRound aria-hidden size={18} />
-              <input
-                value={personName}
-                onChange={(event) => setPersonName(event.target.value)}
-                placeholder="Mentor's nickname :)"
-                autoComplete="off"
-              />
-            </label>
-
             <div className={styles.urlList}>
               {urlFields.map((url, index) => {
                 const isInvalid = url.trim() !== "" && !parseYouTubeUrl(url);

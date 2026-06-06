@@ -1,5 +1,6 @@
 import { buildConversationSystemPrompt } from "@/lib/prompts/persona";
 import {
+  buildKnowledgeMap,
   buildFallbackPersonaProfile,
   buildPersonaProfile,
   compressTranscriptContextIfNeeded,
@@ -32,6 +33,15 @@ const MAX_YOUTUBE_URLS = 6;
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const TRANSCRIPT_REQUEST_STAGGER_MS = 1100;
 const LOCAL_AVATAR_LOOP_URL = "/avatar/listening.mp4";
+const UNKNOWN_PERSON_NAME_HINT =
+  "unknown - infer from the YouTube title, channel, and transcript";
+const FALLBACK_PERSON_NAME = "this mentor";
+const VIDEO_METADATA_TIMEOUT_MS = 3000;
+
+type YouTubeVideoMetadata = {
+  title?: string;
+  channelName?: string;
+};
 
 export async function POST(request: Request) {
   try {
@@ -43,7 +53,6 @@ export async function POST(request: Request) {
     }
 
     const parsedUrls = validation.youtubeUrls;
-    const personName = validation.personName;
     const transcriptResults = await fetchTranscriptsWithRateLimit(
       parsedUrls,
     );
@@ -87,13 +96,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const combinedTranscripts = transcripts
-      .map(
-        (transcript) =>
-          `--- ${transcript.source} ---\nURL: ${transcript.url}\nLanguage: ${
-            transcript.lang ?? "unknown"
-          }\n\n${transcript.content}`,
-      )
+    const enrichedTranscripts = await enrichTranscriptsWithVideoMetadata(
+      transcripts,
+    );
+    const combinedTranscripts = enrichedTranscripts
+      .map((transcript) => {
+        const metadataLines = [
+          `URL: ${transcript.url}`,
+          transcript.title ? `Title: ${transcript.title}` : null,
+          transcript.channelName ? `Channel: ${transcript.channelName}` : null,
+          `Language: ${transcript.lang ?? "unknown"}`,
+        ].filter((line) => line !== null);
+
+        return `--- ${transcript.source} ---\n${metadataLines.join(
+          "\n",
+        )}\n\n${transcript.content}`;
+      })
       .join("\n\n");
     debug.combinedTranscriptChars = combinedTranscripts.length;
 
@@ -101,13 +119,14 @@ export async function POST(request: Request) {
       validation.uploadedPhotoDataUrl ??
       (await chooseThumbnailUrl(transcripts[0].videoId));
 
-    const [transcriptContext, generatedPersonaProfile] = await buildPersonaWithContext(
-      combinedTranscripts,
-      personName,
-    );
+    const [transcriptContext, generatedPersonaProfile, knowledgeMap] =
+      await buildPersonaWithContext(combinedTranscripts);
     debug.liveContextChars = transcriptContext.length;
     debug.liveContextEstimatedTokens = estimateTokens(transcriptContext);
 
+    const personName =
+      normalizeInferredPersonName(generatedPersonaProfile.name) ??
+      FALLBACK_PERSON_NAME;
     const personaProfile = {
       ...generatedPersonaProfile,
       name: personName,
@@ -116,6 +135,7 @@ export async function POST(request: Request) {
       personName,
       personaProfile,
       transcriptContext,
+      knowledgeMap,
     );
     const vapiAssistantId = await createVapiAssistant({
       personName,
@@ -231,22 +251,10 @@ function sleep(ms: number) {
 
 function validateBuildRequest(body: Partial<BuildRequest>):
   | {
-      personName: string;
       youtubeUrls: { url: string; videoId: string }[];
       uploadedPhotoDataUrl?: string;
     }
   | BuildError {
-  const personName =
-    typeof body.personName === "string" ? body.personName.trim() : "";
-
-  if (!personName) {
-    return { error: "Provide the person's name." };
-  }
-
-  if (personName.length > 80) {
-    return { error: "Person's name must be 80 characters or fewer." };
-  }
-
   if (!Array.isArray(body.youtubeUrls)) {
     return { error: "Provide 1-6 YouTube URLs." };
   }
@@ -291,7 +299,6 @@ function validateBuildRequest(body: Partial<BuildRequest>):
   }
 
   return {
-    personName,
     youtubeUrls: dedupeParsedUrls(
       parsed.map((item) => item.parsed).filter((item) => item !== null),
     ),
@@ -301,22 +308,127 @@ function validateBuildRequest(body: Partial<BuildRequest>):
 
 async function buildPersonaWithContext(
   combinedTranscripts: string,
-  personName: string,
 ) {
   const transcriptContext =
     await compressTranscriptContextIfNeeded(combinedTranscripts);
 
+  const personaProfile = await buildPersonaProfileWithFallback(
+    transcriptContext,
+  );
+  const personName =
+    normalizeInferredPersonName(personaProfile.name) ?? FALLBACK_PERSON_NAME;
+  const knowledgeMap = await buildKnowledgeMapWithFallback(
+    transcriptContext,
+    personName,
+  );
+
+  return [transcriptContext, personaProfile, knowledgeMap] as const;
+}
+
+async function buildPersonaProfileWithFallback(
+  transcriptContext: string,
+) {
   try {
-    return [
+    return await buildPersonaProfile(
       transcriptContext,
-      await buildPersonaProfile(transcriptContext, personName),
-    ] as const;
-  } catch {
-    return [
-      transcriptContext,
-      buildFallbackPersonaProfile(transcriptContext, personName),
-    ] as const;
+      UNKNOWN_PERSON_NAME_HINT,
+    );
+  } catch (error) {
+    console.info("[build-mentor] persona generation fallback", {
+      reason:
+        error instanceof Error ? error.message : "Persona generation failed.",
+    });
+
+    return buildFallbackPersonaProfile(transcriptContext, "");
   }
+}
+
+async function buildKnowledgeMapWithFallback(
+  transcriptContext: string,
+  personName: string,
+) {
+  try {
+    return await buildKnowledgeMap(transcriptContext, personName);
+  } catch (error) {
+    console.info("[build-mentor] knowledge map skipped", {
+      reason:
+        error instanceof Error ? error.message : "Knowledge map failed.",
+    });
+
+    return "";
+  }
+}
+
+async function enrichTranscriptsWithVideoMetadata<T extends { url: string }>(
+  transcripts: T[],
+) {
+  return Promise.all(
+    transcripts.map(async (transcript) => {
+      const metadata = await fetchYouTubeVideoMetadata(transcript.url);
+
+      return {
+        ...transcript,
+        ...metadata,
+      };
+    }),
+  );
+}
+
+async function fetchYouTubeVideoMetadata(
+  url: string,
+): Promise<YouTubeVideoMetadata> {
+  try {
+    const response = await fetch(
+      `https://www.youtube.com/oembed?${new URLSearchParams({
+        url,
+        format: "json",
+      })}`,
+      {
+        signal: AbortSignal.timeout(VIDEO_METADATA_TIMEOUT_MS),
+      },
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    const data = (await response.json().catch(() => null)) as
+      | { title?: unknown; author_name?: unknown }
+      | null;
+
+    return {
+      title: typeof data?.title === "string" ? data.title : undefined,
+      channelName:
+        typeof data?.author_name === "string" ? data.author_name : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function normalizeInferredPersonName(name: string | undefined) {
+  const trimmed = name?.trim().replace(/\s+/g, " ");
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+  const invalidNames = new Set([
+    "unknown",
+    "unknown person",
+    "unknown mentor",
+    "this mentor",
+    "the mentor",
+    "the person",
+    "speaker",
+  ]);
+
+  if (invalidNames.has(lower) || lower.startsWith("unknown - infer")) {
+    return null;
+  }
+
+  return trimmed;
 }
 
 async function chooseThumbnailUrl(videoId: string) {

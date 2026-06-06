@@ -50,13 +50,17 @@ export async function createVapiAssistant({
         provider: "deepgram",
         model: "nova-3-general",
         language: "en",
+        endpointing: 300,
+      },
+      startSpeakingPlan: {
+        waitSeconds: 1,
       },
       model: {
         provider: "openai",
         model,
         fallbackModels,
-        temperature: 0.45,
-        maxTokens: 250,
+        temperature: 0.3,
+        maxTokens: 500,
         messages: [
           {
             role: "system",
