@@ -1,5 +1,4 @@
 export type BuildRequest = {
-  personName: string;
   youtubeUrls: string[];
   uploadedPhotoDataUrl?: string;
 };
@@ -73,4 +72,6 @@ export type TranscriptSource = {
   source: string;
   content: string;
   lang?: string;
+  title?: string;
+  channelName?: string;
 };

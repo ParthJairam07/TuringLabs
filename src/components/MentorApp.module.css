@@ -79,10 +79,6 @@
   padding: 0 8px 0 14px;
 }
 
-.nameRow {
-  grid-template-columns: 20px 1fr;
-}
-
 .urlRow input {
   width: 100%;
   min-width: 0;

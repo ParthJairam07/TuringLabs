@@ -55,8 +55,8 @@ export async function createVapiAssistant({
         provider: "openai",
         model,
         fallbackModels,
-        temperature: 0.45,
-        maxTokens: 250,
+        temperature: 0.3,
+        maxTokens: 500,
         messages: [
           {
             role: "system",
