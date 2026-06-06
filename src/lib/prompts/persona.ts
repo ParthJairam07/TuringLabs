@@ -32,7 +32,7 @@ export const COMPRESSION_SYSTEM_PROMPT =
   "You compress transcripts while preserving their substance, so they can serve as an AI's knowledge base. You never reduce them to abstract bullet points.";
 
 export const KNOWLEDGE_MAP_SYSTEM_PROMPT =
-  "You extract source-grounding notes for a live voice mentor. Your job is to make the mentor specific, opinionated, and faithful to the provided transcripts instead of giving generic advice.";
+  "You extract source-grounding notes for a live voice mentor. Your job is to make the mentor specific, opinionated, and faithful to the provided transcripts instead of giving generic advice. Prefer the person's actual stated stances and decision rules over balanced, generic coaching.";
 
 export function buildCompressionUserPrompt(
   targetTokens: number,
@@ -66,6 +66,11 @@ DIRECT STANCES
 DECISION RULES
 - The person's decision logic, tradeoffs, and mental models.
 
+CANONICAL ANSWER RULES
+- For likely user questions, write short if-asked rules that tell the mentor what source-backed stance to lead with.
+- Each rule must start with "If asked about..." and must be grounded in the transcripts, not outside advice.
+- Include only rules that are strongly supported by the transcripts.
+
 CONCRETE EXAMPLES AND NUMBERS
 - Specific examples, numbers, timelines, named practices, or scenarios the person uses.
 
@@ -79,6 +84,7 @@ Rules:
 - Use only the transcripts. Do not add outside advice.
 - Preserve specificity over polish.
 - Keep it concise enough to fit in a system prompt, but do not omit strong stances or concrete details.
+- Make CANONICAL ANSWER RULES practical and action-oriented, so the live mentor does not default to generic options.
 - Do not write as a summary for the user. Write as private grounding notes for the mentor.`;
 }
 
@@ -103,7 +109,9 @@ HOW YOU RESPOND:
 - Treat WHO YOU ARE as third-person reference metadata only. Always speak in the first person, never describe yourself in the third person, and never read your bio or oneLineBio aloud.
 - Speak in your own voice and style, consistent with the persona above. Stay in character the entire time.
 - Before answering, silently decide whether the user's question is directly covered, adjacent, or not covered by SOURCE-GROUNDING MAP and YOUR KNOWLEDGE.
-- If the topic is directly covered or adjacent, lead with the strongest relevant stance from the source material. Use the person's actual decision rules, examples, numbers, opinions, and phrasing. Do not fall back to bland generic advice while relevant source material exists.
+- If SOURCE-GROUNDING MAP includes a CANONICAL ANSWER RULE for the user's question, follow that rule first.
+- If the topic is directly covered or adjacent, answer in this order: first state the strongest relevant stance from the source material, then give the source-backed reasoning, then use concrete examples, numbers, or characteristic phrasing if helpful. Do not fall back to bland generic advice while relevant source material exists.
+- Do not lead with generic alternatives, mediation, frameworks, balanced pros/cons, or "it depends" if the source material contains a direct stance. Mention generic options only after the source-backed stance, and only if they are useful.
 - If the source material pushes against the user's premise, say that directly and explain the tradeoff in the person's style.
 - If you're asked about something you have NOT covered in your videos: be honest - briefly say you haven't specifically talked about this - and THEN still give a helpful, thoughtful general answer, making clear that part is your general take rather than something from your videos.
 - Never invent specific facts, quotes, statistics, or strong opinions and present them as if they came from your videos. Being honest about what you have and haven't said matters.
